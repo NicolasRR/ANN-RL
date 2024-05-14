@@ -16,7 +16,8 @@ class QNetwork(nn.Module):
         self.fc1 = nn.Linear(state_size, hidden_size)
         self.bn1 = nn.BatchNorm1d(hidden_size)  # BatchNorm1d layer
         self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, action_size)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
+        self.fc4 = nn.Linear(hidden_size, action_size)
 
         self.dropout = nn.Dropout(dropout_rate)  # Dropout layer
 
@@ -25,14 +26,17 @@ class QNetwork(nn.Module):
             state = torch.unsqueeze(state, 0)
             x = F.relu(self.fc1(state))
             x = F.relu(self.fc2(x))
+            x = F.relu(self.fc3(x))
 
         else:
             x = F.relu(self.fc1(state))
-            x = F.relu(self.bn1(self.fc2(x))) 
+            x = F.relu(self.fc2(x))
+            x = F.relu(self.fc3(x))
+
          # Apply BatchNorm1d after fc1
-        x = self.dropout(x)  # Apply Dropout after BatchNorm1d
+        # x = self.dropout(x)  # Apply Dropout after BatchNorm1d
         
-        return self.fc3(x)
+        return self.fc4(x)
 
 class ReplayBuffer():
     def __init__(self, replay_size):
@@ -57,20 +61,16 @@ class ReplayBuffer():
             self.next_state_buffer = np.vstack((self.next_state_buffer[-self.replay_size:], next_state)).astype(np.float32)
             self.importance_buffer = np.hstack((self.importance_buffer[-self.replay_size:], np.max(self.importance_buffer)))
     
-    def update(self, state, action, reward, next_state, importance, idx):
-        self.state_buffer[idx] = state
-        self.action_buffer[idx] = action
-        self.reward_buffer[idx] = reward
-        self.next_state_buffer[idx] = next_state
-        self.importance_buffer[idx] = importance
+    
+    def update(self,importance, idx):
 
-        self.replay_size = self.replay_size 
+        self.importance_buffer[idx] = importance
 
     def sample(self, batch_size, alpha):
         if self.state_buffer.shape[0] < self.replay_size:
             return None
         else:
-            if alpha!=0:
+            if alpha>1e-5:
                 idx = np.random.choice(len(self.state_buffer), batch_size, replace=False, p = self.importance_buffer**alpha/np.sum(self.importance_buffer**alpha))
             else:
                 idx = np.random.choice(len(self.state_buffer), batch_size, replace=False)
@@ -95,7 +95,8 @@ class DQNAgent:
         scheduler=None,
         target_network = False,
         target_network_update = 100,
-        alpha = 1
+        alpha = 1,
+        amsgrad = False
     ):
         """Initialize a Reinforcement Learning agent with an empty dictionary
         of state-action values (q_values), a learning rate and an epsilon.
@@ -118,7 +119,7 @@ class DQNAgent:
         self.replay_buffer = ReplayBuffer(replay_size=replay_size)
         self.discount_factor = discount_factor
         self.epsilon = initial_epsilon
-        self.optimizer = torch.optim.AdamW(self.qnetwork.parameters(), lr=learning_rate, weight_decay=weight_decay, amsgrad=True)
+        self.optimizer = torch.optim.AdamW(self.qnetwork.parameters(), lr=learning_rate, weight_decay=weight_decay, amsgrad=amsgrad)
         self.final_epsilon = final_epsilon
         self.epsilon_decay = epsilon_decay
         self.scheduler = scheduler
@@ -183,15 +184,16 @@ class DQNAgent:
 
         expected = replay_reward + self.discount_factor * torch.max(q_values_next_obs,dim=1).values
         current = torch.gather(q_values_obs, 1, actions.unsqueeze(1)).squeeze(1)   
-        if self.alpha != 0:
+        if self.alpha > 1e-5:
             delta = torch.abs(expected - current).detach().cpu().numpy()
-            self.replay_buffer.update(obs, action, reward, next_obs, importance=delta, idx=idx)
+            self.replay_buffer.update(importance=delta, idx=idx)
             
-        loss = self.criterion(current,expected)
+        # loss = self.criterion(current,expected)
+        loss = torch.sum((current - expected)**2)
 
 
         loss.backward()
-        torch.nn.utils.clip_grad_value_(self.qnetwork.parameters(), 100)
+        # torch.nn.utils.clip_grad_value_(self.qnetwork.parameters(), 100)
 
         self.optimizer.step()
         if self.scheduler is not None:
@@ -227,7 +229,7 @@ def run(args, env):
     hidden_size=args.hidden_size
     dropout_rate=  args.dropout_rate
     weight_decay=args.weight_decay
-    target_network = True
+    target_network = args.target_network,
     target_network_update = int(args.target_network_update)
     alpha = args.alpha
     np.random.seed(args.seed)
@@ -250,10 +252,11 @@ def run(args, env):
         weight_decay=weight_decay,
         target_network_update=target_network_update,
         alpha=alpha,
-        seed=args.seed
+        seed=args.seed,
+        amsgrad=args.amsgrad,
     )
     if args.wandb:
-        wandb.init(project='ANN', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update, "auxiliary":auxiliary, "final_reward":final_reward, "intermediate_reward":intermediate_reward}, name='DQN')
+        wandb.init(project='ANN', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update, "auxiliary":auxiliary, "final_reward":final_reward, "intermediate_reward":intermediate_reward, "amsgrad":args.amsgrad}, name='DQN')
 
 
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=n_episodes)
@@ -277,11 +280,10 @@ def run(args, env):
 
                 # update if the environment is done and the current obs
                 done = terminated or truncated
+                reward+=0.5*intermediate_reward*(1.8-(0.6-next_obs[0]))/1.8+0.5*intermediate_reward*(np.abs(next_obs[1]))/0.7
                 if terminated:
                     next_obs = (None, None)
                     reward+=final_reward
-                else:
-                    reward+=intermediate_reward*(1.7-(0.5-next_obs[0]))*(next_obs[0] < 0.5)/1.7
 
                 loss, target_count = agent.update(obs, action, reward, next_obs, batch_size=batch_size, target_count=target_count)
                 if loss is not None:
@@ -325,14 +327,15 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_size", type=int, default=128)
     parser.add_argument("--dropout_rate", type=float, default=0.1)
     parser.add_argument("--weight_decay", type=float, default=0.01)
-    parser.add_argument("--target_network_update", type=int, default=100)
+    parser.add_argument("--target_network_update", type=int, default=10_000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=1)
-    parser.add_argument("--auxiliary", type=bool, default=False)
     parser.add_argument("--intermediate_reward", type=float, default=0)
     parser.add_argument("--final_reward", type=float, default=0)
     parser.add_argument("--wandb", action="store_true")
-
+    parser.add_argument("--amsgrad", action="store_true")
+    parser.add_argument("--auxiliary", action="store_true")
+    parser.add_argument("--target_network", action="store_true")
 
     args = parser.parse_args()
     env = gym.make('MountainCar-v0')
