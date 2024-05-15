@@ -280,7 +280,9 @@ def run(args, env):
 
                 # update if the environment is done and the current obs
                 done = terminated or truncated
-                reward+=0.5*intermediate_reward*(1.8-(0.6-next_obs[0]))/1.8+0.5*intermediate_reward*(np.abs(next_obs[1]))/0.7
+                # reward+=0.5*intermediate_reward*(1.8-(0.6-next_obs[0]))/1.8+0.5*intermediate_reward*(np.abs(next_obs[1]))/0.7
+                reward+=intermediate_reward*(np.abs(next_obs[1]))/0.7
+
                 if terminated:
                     next_obs = (None, None)
                     reward+=final_reward
