@@ -4,10 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
 import argparse
-
+from scipy.special import softmax
 
 class DynaAgent:
-    def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, epsilon=0.9, min_epsilon=0.05, k=5, env=gym.make('MountainCar-v0')):
+    def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, epsilon=0.9, min_epsilon=0.05, k=5, replay_size=10_000, env=gym.make('MountainCar-v0')):
     
         self.born_inf=env.observation_space.low
         self.born_sup=env.observation_space.high
@@ -19,71 +19,68 @@ class DynaAgent:
         self.epsilon = epsilon
         self.min_epsilon = min_epsilon
         self.k = k
+        self.replay_size = replay_size
         
         # Initialize model components
-        self.n_states_tot=self.n_states[0]*self.n_states[1]
-        self.P_hat = np.ones(shape=(self.n_states_tot, self.n_actions, self.n_states_tot) )
-        self.R_hat = np.zeros(shape=(self.n_states_tot,self. n_actions))
+        self.P_hat = np.ones((self.n_states[0], self.n_states[1], self.n_actions, self.n_states[0], self.n_states[1]))
+        self.R_hat = np.zeros((self.n_states[0], self.n_states[1], self.n_actions))
         self.count_matrix=np.zeros_like(self.R_hat)
-        self.Q = np.zeros(shape=(self.n_states_tot, self.n_actions))
-        self.delta_Q=[]
-        self.replay_buffer = deque(maxlen=10000)
+        self.Q = np.zeros((self.n_states[0], self.n_states[1], self.n_actions))
+        self.delta_Q = []
+        self.replay_buffer = None
         
         
     def discretize_state(self, state):
-        discr_state = (state - self.born_inf) / np.array(self.discr_step)
-        return tuple(discr_state.astype(int))
-        
-    def encode_state(self,state):
-     
-        return state[0]+self.n_states[0]*state[1]
+        discr_state = (state - self.born_inf) / self.discr_step
+        return discr_state.astype(int)
     
-    def update_model(self, state, action, reward, next_state):
-        discr_state = self.discretize_state(state)
-        discr_next_state = self.discretize_state(next_state)
-        
+    def update_model(self, discr_state, action, reward, discr_next_state):
         # Update transition probabilities
 
-        self.P_hat[self.encode_state(discr_state)][action][self.encode_state(discr_next_state)] += 1
+        self.P_hat[discr_state[0], discr_state[1], action, discr_next_state[0], discr_next_state[1]] += 1
         
         # Update rewards
-        self.R_hat[self.encode_state(discr_state)][action] += reward
-        self.count_matrix[self.encode_state(discr_state)][action]+=1
+        self.R_hat[discr_state[0], discr_state[1], action] += reward
+        self.count_matrix[discr_state[0], discr_state[1], action]+=1
     
     
-    def update_q_value(self, state, action):
-        discr_state = self.discretize_state(state)
-        current = self.encode_state(discr_state)
+    def update_q_value(self, discr_state, action):
     
         # Precompute max Q-values for all next states
-        max_next_q_values = np.max(self.Q, axis=1)
+        max_next_q_values = np.max(self.Q, axis=-1)
     
         # Compute the second term of the Q-value update equation
-        second_term = self.gamma * np.dot(self.P_hat[current, action, :] / np.sum(self.P_hat[current, action, :]), max_next_q_values)
+        discounted_rewards = self.gamma * np.sum(self.P_hat[discr_state[0], discr_state[1], action, :,:] / np.sum(self.P_hat[discr_state[0], discr_state[1], action, :,:])*max_next_q_values)
     
         # Compute the Q-value update
-        update = self.R_hat[current, action] / self.count_matrix[current, action] + second_term
+        update_value = self.R_hat[discr_state[0], discr_state[1], action] / self.count_matrix[discr_state[0], discr_state[1], action] + discounted_rewards
     
         # Update Q-value
-        self.delta_Q.append(update - self.Q[current, action])
-        self.Q[current, action] = update
-    
+        self.delta_Q.append(update_value - self.Q[discr_state[0], discr_state[1], action])
+        self.Q[discr_state[0], discr_state[1], action] = update_value
+        # FIXME: do we have to reset the count matrix after updating the Q-value?
         
     def update(self, state, action, reward, next_state):
-        
-        self.update_model(state, action, reward, next_state)
-        self.update_q_value(state, action)
+        discr_state = self.discretize_state(state)
+        discr_next_state = self.discretize_state(next_state)
+        # FIXME: add none when too small replay buffer
+        self.update_model(discr_state, action, reward, discr_next_state)
+        self.update_q_value(discr_state, action)
         
         # Store experience in replay buffer
-        self.replay_buffer.append((state, action))
+        if self.replay_buffer is None:
+            self.replay_buffer = np.array([(discr_state[0], discr_state[1], action)])
+        else:
+            self.replay_buffer = np.vstack((self.replay_buffer[-self.replay_size:], (discr_state[0], discr_state[1], action)))
         
         # Sample from replay buffer for further updates
-        for _ in range(self.k):
-            # Randomly sample from replay buffer
-            rand_experience = random.choice(self.replay_buffer)
-            rand_state, rand_action = rand_experience
-            
-            self.update_q_value(rand_state, rand_action)
+        # Randomly sample from replay buffer
+        if len(self.replay_buffer) >= self.replay_size:
+            rand_idx = np.random.choice(len(self.replay_buffer), self.k, replace=False)
+            rand_experience = self.replay_buffer[rand_idx]
+
+            for i in range(self.k):
+                self.update_q_value(rand_experience[i][0:2], rand_experience[i][-1])
       
         
     def select_action(self, state):
@@ -91,33 +88,31 @@ class DynaAgent:
             return np.random.randint(self.n_actions)
         else:
             discr_state = self.discretize_state(state)
-            return np.argmax(self.Q[self.encode_state(discr_state)])
+            return np.argmax(self.Q[discr_state[0], discr_state[1], :])
     
-    def decay_epsilon(self, episode):
-        self.epsilon = max(self.min_epsilon, self.epsilon * self.decay)
+    def decay_epsilon(self):
+        if len(self.replay_buffer) >= self.replay_size:
+            self.epsilon = max(self.min_epsilon, self.epsilon * self.decay)
 
-    def plot_delta_Q(self):
-        plt.plot(self.delta_Q)
-        plt.title('Q_value update step')
-        plt.show()
-        
-    def plot_max_Q(self):
-        max_Q_values = np.zeros((self.n_states[0], self.n_states[1]))
-    
-        for i in range(self.n_states[0]):
-            for j in range(self.n_states[1]):
-                state = (self.born_inf[0] + i * self.discr_step[0], self.born_inf[1] + j * self.discr_step[1])
-                discr_state = self.discretize_state(state)
-                max_Q_values[i][j] = np.max(self.Q[self.encode_state(discr_state)])
-    
-        plt.imshow(max_Q_values.T, origin='lower', extent=[self.born_inf[0], self.born_sup[0], self.born_inf[1], self.born_sup[1]])
-        plt.colorbar(label='Max Q-value')
-        plt.xlabel('Position')
-        plt.ylabel('Velocity')
-        plt.title('Max Q-values after learning')
-        plt.show()
-    
+def plot_max_Q(dyna):
+    max_Q_values = np.zeros((dyna.n_states[0], dyna.n_states[1]))
 
+    for i in range(dyna.n_states[0]):
+        for j in range(dyna.n_states[1]):
+            max_Q_values[i][j] = np.max(dyna.Q[i,j,:])
+
+    plt.imshow(max_Q_values.T, origin='lower', extent=[dyna.born_inf[0], dyna.born_sup[0], dyna.born_inf[1], dyna.born_sup[1]])
+    plt.colorbar(label='Max Q-value')
+    plt.xlabel('Position')
+    plt.ylabel('Velocity')
+    plt.title('Max Q-values after learning')
+    plt.show()
+    
+def plot_delta_Q(dyna):
+    plt.plot(dyna.delta_Q)
+    plt.title('Q_value update step')
+    plt.show()
+    
 def run(args):
     
     # Create the environment
@@ -152,7 +147,7 @@ def run(args):
             x.append(state[0])  
             v.append(state[1])
 
-        dyna_agent.decay_epsilon(episode)
+        dyna_agent.decay_epsilon()
         
         episode_rewards.append(total_reward) 
         episode_durations.append(n_itr)
