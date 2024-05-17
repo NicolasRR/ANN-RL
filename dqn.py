@@ -192,7 +192,6 @@ class DQNAgent:
             self.replay_buffer.update(importance=delta, idx=idx)
             
         loss = self.criterion(current,expected)
-        # loss = torch.sum((current - expected)**2)
 
         loss.backward()
         torch.nn.utils.clip_grad_value_(self.qnetwork.parameters(), 100)
@@ -235,9 +234,7 @@ def run(args, env):
     target_network_update = int(args.target_network_update)
     alpha = args.alpha
     np.random.seed(args.seed)
-    auxiliary = args.auxiliary
     intermediate_reward = args.intermediate_reward
-    final_reward = args.final_reward
 
     agent = DQNAgent(
         learning_rate=learning_rate,
@@ -260,7 +257,7 @@ def run(args, env):
 
     )
     if args.wandb:
-        wandb.init(project='ANN', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update, "auxiliary":auxiliary, "final_reward":final_reward, "intermediate_reward":intermediate_reward, "amsgrad":args.amsgrad}, name='DQN')
+        wandb.init(project='ANN', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update,"intermediate_reward":intermediate_reward, "amsgrad":args.amsgrad}, name='DQN')
 
 
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=n_episodes)
@@ -270,6 +267,7 @@ def run(args, env):
         target_count = 0
         finished = []
         episode_steps = []
+        empty = True
         for episode in tqdm(range(n_episodes)):
             obs, info = env.reset()
             done = False
@@ -284,35 +282,38 @@ def run(args, env):
 
                 # update if the environment is done and the current obs
                 done = terminated or truncated
-                # reward+=0.5*intermediate_reward*(1.8-(0.6-next_obs[0]))/1.8+0.5*intermediate_reward*(np.abs(next_obs[1]))/0.7
-                reward+=intermediate_reward*(np.abs(next_obs[1]))/0.7
-
+                reward+=intermediate_reward*np.min((args.w_position*(next_obs[0]-obs[0])/(0.5+1.2) + args.w_velocity*(np.abs(next_obs[1]))/0.7, 1))
                 if terminated:
                     next_obs = (None, None)
-                    reward+=final_reward
 
                 loss, target_count = agent.update(obs, action, reward, next_obs, batch_size=batch_size, target_count=target_count)
+                    
                 if loss is not None:
                     episode_reward += reward
                     episode_loss+=loss
                 obs = next_obs
                 t+=1
-            finished.append(terminated)
-            episode_steps.append(t)
-            rewards.append(episode_reward)
-            losses.append(episode_loss)
-            agent.decay_epsilon()
+
             pbar.set_description(f"Episode {episode + 1}/{n_episodes}")
             pbar.set_postfix(train_loss=loss, epsilon=agent.epsilon, target_count=target_count)
             pbar.update(1)
             pbar.refresh() 
-            if episode % logging_interval == 0 and episode>100:
-                if args.wandb:
-                    wandb.log({"train_loss": np.mean(losses), "epsilon": agent.epsilon, "episode_steps": np.mean(episode_steps), "finished": np.sum(finished), "mean_reward": np.mean(rewards)})
-                losses = []
-                rewards = []
-                finished = []
-                episode_steps = []
+            if not empty:
+                finished.append(terminated)
+                episode_steps.append(t)
+                rewards.append(episode_reward)
+                losses.append(episode_loss)
+                agent.decay_epsilon()
+                if episode % logging_interval == 0 :
+                    if args.wandb:
+                        wandb.log({"train_loss": np.mean(losses), "epsilon": agent.epsilon, "episode_steps": np.mean(episode_steps), "finished": np.sum(finished), "mean_reward": np.mean(rewards)})
+                    losses = []
+                    rewards = []
+                    finished = []
+                    episode_steps = []
+                    
+            if loss is not None:
+                empty = False
 
 
 
@@ -335,12 +336,12 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--target_network_update", type=int, default=10_000)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--alpha", type=float, default=1)
+    parser.add_argument("--alpha", type=float, default=0.0)
     parser.add_argument("--intermediate_reward", type=float, default=0)
-    parser.add_argument("--final_reward", type=float, default=0)
+    parser.add_argument("--w_position", type=float, default=1.0)
+    parser.add_argument("--w_velocity", type=float, default=1.0)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--amsgrad", action="store_true")
-    parser.add_argument("--auxiliary", action="store_true")
     parser.add_argument("--target_network", action="store_true")
     parser.add_argument("--gpu", action="store_true")
 
