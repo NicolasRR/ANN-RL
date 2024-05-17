@@ -7,8 +7,6 @@ import torch.nn.functional as F
 import wandb
 import argparse
 
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
 class QNetwork(nn.Module):
     def __init__(self, state_size, action_size, hidden_size,dropout_rate, seed):
         super(QNetwork, self).__init__()
@@ -32,9 +30,7 @@ class QNetwork(nn.Module):
             x = F.relu(self.fc1(state))
             x = F.relu(self.fc2(x))
             x = F.relu(self.fc3(x))
-
-         # Apply BatchNorm1d after fc1
-        # x = self.dropout(x)  # Apply Dropout after BatchNorm1d
+            x = self.dropout(x)  
         
         return self.fc4(x)
 
@@ -92,11 +88,12 @@ class DQNAgent:
         dropout_rate: float = 0.1,
         seed: int = 42,
         weight_decay: float = 0.01,
-        scheduler=None,
+        scheduler=False,
         target_network = False,
         target_network_update = 100,
         alpha = 1,
-        amsgrad = False
+        amsgrad = False,
+        device = "cpu"
     ):
         """Initialize a Reinforcement Learning agent with an empty dictionary
         of state-action values (q_values), a learning rate and an epsilon.
@@ -108,10 +105,11 @@ class DQNAgent:
             final_epsilon: The final epsilon value
             discount_factor: The discount factor for computing the Q-value
         """
-        self.qnetwork = QNetwork(state_size=state_size, action_size=action_size, hidden_size=hidden_size, dropout_rate=dropout_rate,seed=seed).to(DEVICE)
+        self.device = device
+        self.qnetwork = QNetwork(state_size=state_size, action_size=action_size, hidden_size=hidden_size, dropout_rate=dropout_rate,seed=seed).to(self.device)
       
         if target_network: 
-            self.target_network = QNetwork(state_size=state_size, action_size=action_size, hidden_size=hidden_size, dropout_rate=dropout_rate,seed=seed).to(DEVICE)
+            self.target_network = QNetwork(state_size=state_size, action_size=action_size, hidden_size=hidden_size, dropout_rate=dropout_rate,seed=seed).to(self.device)
             self.target_network.load_state_dict(self.qnetwork.state_dict())
             self.target_network.eval()
         else:
@@ -120,9 +118,14 @@ class DQNAgent:
         self.discount_factor = discount_factor
         self.epsilon = initial_epsilon
         self.optimizer = torch.optim.AdamW(self.qnetwork.parameters(), lr=learning_rate, weight_decay=weight_decay, amsgrad=amsgrad)
+        if scheduler:
+            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=self.optimizer, max_lr=args.lr, total_steps=args.iterations, 
+                                                            pct_start=args.warmup_percent, anneal_strategy="linear", 
+                                                            cycle_momentum=False, div_factor=1e2, final_div_factor=.1)
+        else:
+            self.scheduler = None
         self.final_epsilon = final_epsilon
         self.epsilon_decay = epsilon_decay
-        self.scheduler = scheduler
         self.target_network_update = target_network_update
         self.criterion = nn.SmoothL1Loss()
         self.alpha = alpha
@@ -142,7 +145,7 @@ class DQNAgent:
         # with probability (1 - epsilon) act greedily (exploit)
         else:
             with torch.no_grad():
-                q_values = self.qnetwork(torch.tensor(obs,device=DEVICE).unsqueeze(0))
+                q_values = self.qnetwork(torch.tensor(obs,device=self.device).unsqueeze(0))
                 action = int(torch.argmax(q_values))
                 return action
 
@@ -162,17 +165,17 @@ class DQNAgent:
         if sample_replay is None:
             return None, target_count
         idx = sample_replay[-1]
-        replay_reward = torch.tensor(sample_replay[2]).to(DEVICE)
-        actions = torch.tensor(sample_replay[1]).to(DEVICE)
-        replay_obs = torch.tensor(sample_replay[0]).to(DEVICE)
-        replay_next_obs = torch.tensor(sample_replay[3]).to(DEVICE)
+        replay_reward = torch.tensor(sample_replay[2]).to(self.device)
+        actions = torch.tensor(sample_replay[1]).to(self.device)
+        replay_obs = torch.tensor(sample_replay[0]).to(self.device)
+        replay_next_obs = torch.tensor(sample_replay[3]).to(self.device)
         non_terminal = ~torch.isnan(replay_next_obs)[:,0]
         
         self.qnetwork.train()
         q_values_obs = self.qnetwork(replay_obs)
 
         with torch.no_grad():
-            q_values_next_obs = torch.zeros_like(q_values_obs, device=DEVICE)
+            q_values_next_obs = torch.zeros_like(q_values_obs, device=self.device)
 
             if self.target_network is not None:            
                 q_values_next_obs[non_terminal,:] = self.target_network(replay_next_obs[non_terminal,:])
@@ -188,12 +191,11 @@ class DQNAgent:
             delta = torch.abs(expected - current).detach().cpu().numpy()
             self.replay_buffer.update(importance=delta, idx=idx)
             
-        # loss = self.criterion(current,expected)
-        loss = torch.sum((current - expected)**2)
-
+        loss = self.criterion(current,expected)
+        # loss = torch.sum((current - expected)**2)
 
         loss.backward()
-        # torch.nn.utils.clip_grad_value_(self.qnetwork.parameters(), 100)
+        torch.nn.utils.clip_grad_value_(self.qnetwork.parameters(), 100)
 
         self.optimizer.step()
         if self.scheduler is not None:
@@ -254,6 +256,8 @@ def run(args, env):
         alpha=alpha,
         seed=args.seed,
         amsgrad=args.amsgrad,
+        device = 'cuda' if (torch.cuda.is_available() and args.gpu) else 'cpu'
+
     )
     if args.wandb:
         wandb.init(project='ANN', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update, "auxiliary":auxiliary, "final_reward":final_reward, "intermediate_reward":intermediate_reward, "amsgrad":args.amsgrad}, name='DQN')
@@ -338,6 +342,7 @@ if __name__ == "__main__":
     parser.add_argument("--amsgrad", action="store_true")
     parser.add_argument("--auxiliary", action="store_true")
     parser.add_argument("--target_network", action="store_true")
+    parser.add_argument("--gpu", action="store_true")
 
     args = parser.parse_args()
     env = gym.make('MountainCar-v0')
