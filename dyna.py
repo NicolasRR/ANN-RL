@@ -7,7 +7,7 @@ import argparse
 from scipy.special import softmax
 
 class DynaAgent:
-    def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, epsilon=0.9, min_epsilon=0.05, k=5, replay_size=10_000, env=gym.make('MountainCar-v0')):
+    def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, epsilon=0.9, min_epsilon=0.05, k=5, replay_size=10_000, alpha=0,env=gym.make('MountainCar-v0')):
     
         self.born_inf=env.observation_space.low
         self.born_sup=env.observation_space.high
@@ -28,6 +28,7 @@ class DynaAgent:
         self.Q = np.zeros((self.n_states[0], self.n_states[1], self.n_actions))
         self.delta_Q = []
         self.replay_buffer = None
+        self.alpha = alpha
         
         
     def discretize_state(self, state):
@@ -44,21 +45,37 @@ class DynaAgent:
         self.count_matrix[discr_state[0], discr_state[1], action]+=1
     
     
-    def update_q_value(self, discr_state, action):
+    def update_q_value(self, discr_state, action, idx=None):
     
         # Precompute max Q-values for all next states
         max_next_q_values = np.max(self.Q, axis=-1)
-    
-        # Compute the second term of the Q-value update equation
-        discounted_rewards = self.gamma * np.sum(self.P_hat[discr_state[0], discr_state[1], action, :,:] / np.sum(self.P_hat[discr_state[0], discr_state[1], action, :,:])*max_next_q_values)
+        if len(discr_state.shape)>1:
+            position = discr_state[:,0]
+            velocity = discr_state[:,1]
+        else:
+            position = discr_state[0]
+            velocity = discr_state[1]
+  
+        if len(discr_state.shape)>1:
+
+            # Compute the second term of the Q-value update equation
+            discounted_rewards = self.gamma * np.sum(self.P_hat[position, velocity, action, :,:] / np.sum(self.P_hat[position, velocity, action, :,:],axis=(-1,-2)).reshape(-1,1,1)*max_next_q_values, axis=(-1,-2))
+        else:
+            discounted_rewards = self.gamma * np.sum(self.P_hat[position, velocity, action, :,:] / np.sum(self.P_hat[position, velocity, action, :,:],axis=(-1,-2))*max_next_q_values, axis=(-1,-2))
     
         # Compute the Q-value update
-        update_value = self.R_hat[discr_state[0], discr_state[1], action] / self.count_matrix[discr_state[0], discr_state[1], action] + discounted_rewards
-    
+        update_value = self.R_hat[position, velocity, action] / self.count_matrix[position, velocity, action] + discounted_rewards
+        delta = update_value - self.Q[position, velocity, action]
         # Update Q-value
-        self.delta_Q.append(update_value - self.Q[discr_state[0], discr_state[1], action])
-        self.Q[discr_state[0], discr_state[1], action] = update_value
+        if len(discr_state.shape)>1:
+            self.delta_Q.extend(delta)
+        else:
+            self.delta_Q.append(delta)
+
+        self.Q[position, velocity, action] = update_value
         # FIXME: do we have to reset the count matrix after updating the Q-value?
+        if self.alpha>1e-5 and idx is not None:
+            self.importance_buffer[idx] = np.abs(delta)
         
     def update(self, state, action, reward, next_state):
         discr_state = self.discretize_state(state)
@@ -70,18 +87,22 @@ class DynaAgent:
         # Store experience in replay buffer
         if self.replay_buffer is None:
             self.replay_buffer = np.array([(discr_state[0], discr_state[1], action)])
+            self.importance_buffer = np.array([1], dtype=np.float32)
         else:
             self.replay_buffer = np.vstack((self.replay_buffer[-self.replay_size:], (discr_state[0], discr_state[1], action)))
+            self.importance_buffer = np.hstack((self.importance_buffer[-self.replay_size:], np.max(self.importance_buffer)),dtype=np.float32)
         
         # Sample from replay buffer for further updates
         # Randomly sample from replay buffer
         if len(self.replay_buffer) >= self.replay_size:
-            rand_idx = np.random.choice(len(self.replay_buffer), self.k, replace=False)
-            rand_experience = self.replay_buffer[rand_idx]
+            if self.alpha>1e-5:
+                rand_idx = np.random.choice(len(self.replay_buffer), self.k, replace=False, p = self.importance_buffer**self.alpha/np.sum(self.importance_buffer**self.alpha))
+            else:
+                rand_idx = np.random.choice(len(self.replay_buffer), self.k, replace=False)
 
-            for i in range(self.k):
-                self.update_q_value(rand_experience[i][0:2], rand_experience[i][-1])
-      
+            rand_experience = self.replay_buffer[rand_idx]
+            self.update_q_value(rand_experience[:,0:2], rand_experience[:,-1], idx=rand_idx)
+
         
     def select_action(self, state):
         if np.random.rand() < self.epsilon:

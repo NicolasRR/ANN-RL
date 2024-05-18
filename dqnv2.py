@@ -8,73 +8,9 @@ import wandb
 import argparse
 import torch.nn.init as init
 import random
-class QNetwork(nn.Module):
-    def __init__(self, state_size, action_size, hidden_size,dropout_rate, initilization = False):
-        super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(state_size, hidden_size)
-        self.bn1 = nn.BatchNorm1d(hidden_size)  # BatchNorm1d layer
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, hidden_size)
-        self.fc4 = nn.Linear(hidden_size, action_size)
-        if initilization:
-            # Xavier initialization
-            init.xavier_uniform_(self.fc1.weight)
-            init.xavier_uniform_(self.fc2.weight)
-            init.xavier_uniform_(self.fc3.weight)
-            init.xavier_uniform_(self.fc4.weight)
+from dqn import DQNAgent, QNetwork, ReplayBuffer
 
-
-        self.dropout = nn.Dropout(dropout_rate)  # Dropout layer
-
-    def forward(self, state):
-
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = self.dropout(x)  
-    
-        return self.fc4(x)
-
-class ReplayBuffer():
-    def __init__(self, replay_size):
-        self.state_buffer = None
-        self.action_buffer = None
-        self.reward_buffer = None
-        self.next_state_buffer = None
-        self.importance_buffer = None  
-        self.replay_size = replay_size
-
-    def add(self, state, action, reward, next_state):
-        if self.state_buffer is None:
-            self.state_buffer = np.array(state)
-            self.action_buffer = np.array([action])
-            self.reward_buffer = np.array([reward])
-            self.next_state_buffer = np.array(next_state)
-            self.importance_buffer = np.array([1], dtype=np.float32)
-        else:
-            self.state_buffer = np.vstack((self.state_buffer[-self.replay_size:], state)).astype(np.float32)
-            self.action_buffer = np.hstack((self.action_buffer[-self.replay_size:], action))
-            self.reward_buffer = np.hstack((self.reward_buffer[-self.replay_size:], reward))
-            self.next_state_buffer = np.vstack((self.next_state_buffer[-self.replay_size:], next_state)).astype(np.float32)
-            self.importance_buffer = np.hstack((self.importance_buffer[-self.replay_size:], np.max(self.importance_buffer)))
-    
-    
-    def update(self,importance, idx):
-
-        self.importance_buffer[idx] = importance
-
-    def sample(self, batch_size, alpha):
-        if self.state_buffer.shape[0] < self.replay_size:
-            return None
-        else:
-            if alpha>1e-5:
-                idx = np.random.choice(len(self.state_buffer), batch_size, replace=False, p = self.importance_buffer**alpha/np.sum(self.importance_buffer**alpha))
-            else:
-                idx = np.random.choice(len(self.state_buffer), batch_size, replace=False)
-
-            return [self.state_buffer[idx],self.action_buffer[idx],self.reward_buffer[idx],self.next_state_buffer[idx],idx]
-
-class DQNAgent:
+class DQNAgentV2(DQNAgent):
     def __init__(
         self,
         state_size : int,
@@ -85,6 +21,7 @@ class DQNAgent:
         initial_epsilon: float,
         final_epsilon: float,
         epsilon_decay: float,
+        reward_hidden_size :int,
         discount_factor: float = 0.95,
         dropout_rate: float = 0.1,
         weight_decay: float = 0.01,
@@ -93,8 +30,12 @@ class DQNAgent:
         target_network_update = 100,
         alpha = 1,
         amsgrad = False,
-        device = "cpu"
+        device = "cpu",
+        reward_factor = 1/5,
+        running_window = 100,
+
     ):
+        super().__init__(state_size=state_size, action_size=action_size, hidden_size=hidden_size, replay_size=replay_size, learning_rate=learning_rate, initial_epsilon=initial_epsilon, final_epsilon=final_epsilon, epsilon_decay=epsilon_decay, discount_factor=discount_factor, dropout_rate=dropout_rate, weight_decay=weight_decay, scheduler=scheduler, target_network=target_network, target_network_update=target_network_update, alpha=alpha, amsgrad=amsgrad, device=device)        
         """Initialize a Reinforcement Learning agent with an empty dictionary
         of state-action values (q_values), a learning rate and an epsilon.
 
@@ -105,49 +46,17 @@ class DQNAgent:
             final_epsilon: The final epsilon value
             discount_factor: The discount factor for computing the Q-value
         """
-        self.device = device
-        self.qnetwork = QNetwork(state_size=state_size, action_size=action_size, hidden_size=hidden_size, dropout_rate=dropout_rate).to(self.device)
-      
-        if target_network: 
-            self.target_network = QNetwork(state_size=state_size, action_size=action_size, hidden_size=hidden_size, dropout_rate=dropout_rate).to(self.device)
-            self.target_network.load_state_dict(self.qnetwork.state_dict())
-            self.target_network.eval()
-        else:
-            self.target_network = None
-        self.replay_buffer = ReplayBuffer(replay_size=replay_size)
-        self.discount_factor = discount_factor
-        self.epsilon = initial_epsilon
-        self.optimizer = torch.optim.AdamW(self.qnetwork.parameters(), lr=learning_rate, weight_decay=weight_decay, amsgrad=amsgrad)
-        if scheduler:
-            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=self.optimizer, max_lr=args.lr, total_steps=args.iterations, 
-                                                            pct_start=args.warmup_percent, anneal_strategy="linear", 
-                                                            cycle_momentum=False, div_factor=1e2, final_div_factor=.1)
-        else:
-            self.scheduler = None
-        self.final_epsilon = final_epsilon
-        self.epsilon_decay = epsilon_decay
-        self.target_network_update = target_network_update
-        self.criterion = nn.SmoothL1Loss()
-        self.alpha = alpha
-
-
-    def get_action(self, obs, env) -> int:
-        """
-        Returns the best action with probability (1 - epsilon)
-        otherwise a random action with probability epsilon to ensure exploration.
-        """
-        # with probability epsilon return a random action to explore the environment
-
-        if np.random.random() < self.epsilon:
-            action = env.action_space.sample() 
-            return action
-
-        # with probability (1 - epsilon) act greedily (exploit)
-        else:
-            with torch.no_grad():
-                q_values = self.qnetwork(torch.tensor(obs,device=self.device).unsqueeze(0))
-                action = int(torch.argmax(q_values))
-                return action
+        self.predictor = QNetwork(state_size=state_size, action_size=1, hidden_size=reward_hidden_size, dropout_rate=0.0,initilization=True).to(self.device)
+        self.target_predictor = QNetwork(state_size=state_size, action_size=1, hidden_size=reward_hidden_size, dropout_rate=0.0, initilization=True).to(self.device)
+        for param in self.target_predictor.parameters():
+            param.requires_grad = False
+        self.criterion_intrinsic = nn.MSELoss()
+        self.mse_buffer = None
+        self.reward_factor = reward_factor
+        self.optimizer_intrinsic = torch.optim.Adam(self.predictor.parameters(), lr=learning_rate, weight_decay=weight_decay, amsgrad=amsgrad)
+        self.target_predictor.eval()
+        self.predictor.train()
+        self.running_window = running_window
 
     def update(
         self,
@@ -158,12 +67,42 @@ class DQNAgent:
         target_count: int,
         batch_size: int = 32,
     ):
-        
+
         self.replay_buffer.add(obs, action, reward, next_obs)
+        
+        #################
+        self.predictor.train()
+        self.optimizer_intrinsic.zero_grad()
+        predicted_intrinsic = self.predictor(torch.tensor(next_obs, device=self.device).unsqueeze(0))
+        target_intrinsic = self.target_predictor(torch.tensor(next_obs, device=self.device).unsqueeze(0))
+        intrinsic_loss = self.criterion_intrinsic(predicted_intrinsic, target_intrinsic)
+
+        #################
 
         sample_replay = self.replay_buffer.sample(batch_size, self.alpha)
         if sample_replay is None:
-            return None, target_count
+            if self.mse_buffer is None:
+                self.mse_buffer = np.array([intrinsic_loss.item()])
+            else:
+                self.mse_buffer = np.hstack((self.mse_buffer[-self.running_window:], intrinsic_loss.item()))
+            return None, target_count, None, None
+        
+        intrinsic_loss.backward()
+        self.optimizer_intrinsic.step()
+        #################
+        with torch.no_grad():
+            self.predictor.eval()
+            means = np.mean(self.replay_buffer.state_buffer[-self.running_window:], axis=0)
+            SD = np.std(self.replay_buffer.state_buffer[-self.running_window:], axis=0)
+            normalized_obs = torch.tensor((next_obs-means)/SD, device=self.device).unsqueeze(0)
+            predicted_intrinsic = self.predictor(normalized_obs)
+            target_intrinsic = self.target_predictor(normalized_obs)
+            loss = self.criterion_intrinsic(predicted_intrinsic, target_intrinsic)
+            RND = self.reward_factor*np.clip((loss.item()-np.mean(self.mse_buffer[-self.running_window:]))/np.std(self.mse_buffer[-self.running_window:]), -5,5)
+            self.mse_buffer = np.hstack((self.mse_buffer[-self.running_window:], RND))
+        
+        reward+=RND
+        #################
         idx = sample_replay[-1]
         replay_reward = torch.tensor(sample_replay[2]).to(self.device)
         actions = torch.tensor(sample_replay[1]).to(self.device)
@@ -208,12 +147,15 @@ class DQNAgent:
         else:
             target_count += 1
 
-        return loss.item(), target_count
+        return loss.item(), target_count, RND, intrinsic_loss.item()
 
 
     def decay_epsilon(self):
         if self.replay_buffer.reward_buffer.shape[0] > self.replay_buffer.replay_size:
             self.epsilon = max(self.final_epsilon, self.epsilon*self.epsilon_decay)
+
+
+
 
 
 def run(args, env):
@@ -234,11 +176,11 @@ def run(args, env):
     target_network_update = int(args.target_network_update)
     alpha = args.alpha
     np.random.seed(args.seed)
-    intermediate_reward = args.intermediate_reward
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
+
     agent = DQNAgent(
         learning_rate=learning_rate,
         state_size=2,
@@ -254,12 +196,13 @@ def run(args, env):
         weight_decay=weight_decay,
         target_network_update=target_network_update,
         alpha=alpha,
+        seed=args.seed,
         amsgrad=args.amsgrad,
         device = 'cuda' if (torch.cuda.is_available() and args.gpu) else 'cpu'
 
     )
     if args.wandb:
-        wandb.init(project='ANN', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update,"intermediate_reward":intermediate_reward, "w_position":args.w_position, "w_velocity":args.w_velocity, "amsgrad":args.amsgrad}, name='DQN')
+        wandb.init(project='ANN', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update,"reward_factor":args.reward_factor, "amsgrad":args.amsgrad, "reward_hidden_size":args.reward_hidden_size}, name='DQN')
 
 
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=n_episodes)
@@ -270,6 +213,7 @@ def run(args, env):
         finished = []
         episode_steps = []
         empty = True
+        
         for episode in tqdm(range(n_episodes)):
             obs, info = env.reset()
             done = False
@@ -284,20 +228,18 @@ def run(args, env):
 
                 # update if the environment is done and the current obs
                 done = terminated or truncated
-                reward+=intermediate_reward*np.min((args.w_position*(next_obs[0]-obs[0])/(0.5+1.2) + args.w_velocity*(np.abs(next_obs[1]))/0.7, 1))
                 if terminated:
                     next_obs = (None, None)
-
-                loss, target_count = agent.update(obs, action, reward, next_obs, batch_size=batch_size, target_count=target_count)
+                loss, target_count, RND, predictor_intrinsic_loss = agent.update(obs, action, reward, next_obs, batch_size=batch_size, target_count=target_count)
                     
                 if loss is not None:
-                    episode_reward += reward
+                    episode_reward += reward+RND
                     episode_loss+=loss
                 obs = next_obs
                 t+=1
 
             pbar.set_description(f"Episode {episode + 1}/{n_episodes}")
-            pbar.set_postfix(train_loss=episode_loss/t, epsilon=agent.epsilon, target_count=target_count, episode_steps=t, reward=episode_reward)
+            pbar.set_postfix(train_loss=loss, epsilon=agent.epsilon, target_count=target_count)
             pbar.update(1)
             pbar.refresh() 
             if not empty:
@@ -334,14 +276,13 @@ if __name__ == "__main__":
     parser.add_argument("--replay_size", type=int, default=10_000)
     parser.add_argument("--logging_interval", type=int, default=10)
     parser.add_argument("--hidden_size", type=int, default=128)
-    parser.add_argument("--dropout_rate", type=float, default=0.1)
+    parser.add_argument("--dropout_rate", type=float, default=0.0)
+    parser.add_argument("--reward_hidden_size", type=int, default=64)
     parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--reward_factor", type=float, default=1/5)
     parser.add_argument("--target_network_update", type=int, default=10_000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--alpha", type=float, default=0.0)
-    parser.add_argument("--intermediate_reward", type=float, default=0)
-    parser.add_argument("--w_position", type=float, default=1.0)
-    parser.add_argument("--w_velocity", type=float, default=1.0)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--amsgrad", action="store_true")
     parser.add_argument("--target_network", action="store_true")
