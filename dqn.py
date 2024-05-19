@@ -8,6 +8,7 @@ import wandb
 import argparse
 import torch.nn.init as init
 import random
+from collections import deque
 class QNetwork(nn.Module):
     def __init__(self, state_size, action_size, hidden_size,dropout_rate, initilization = False):
         super(QNetwork, self).__init__()
@@ -64,7 +65,7 @@ class ReplayBuffer():
         self.importance_buffer[idx] = importance
 
     def sample(self, batch_size, alpha):
-        if self.state_buffer.shape[0] < self.replay_size:
+        if self.state_buffer is None or self.state_buffer.shape[0] < self.replay_size:
             return None
         else:
             if alpha>1e-5:
@@ -226,7 +227,6 @@ def run(args, env):
     batch_size = args.batch_size
     discount_factor = args.discount_factor
     replay_size = args.replay_size
-    logging_interval = args.logging_interval
     hidden_size=args.hidden_size
     dropout_rate=  args.dropout_rate
     weight_decay=args.weight_decay
@@ -264,55 +264,52 @@ def run(args, env):
 
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=n_episodes)
     with tqdm(total=n_episodes, desc=f"Episode 0/{n_episodes}") as pbar:
-        losses = []
-        rewards = []
         target_count = 0
-        finished = []
-        episode_steps = []
+        finished = 0
         empty = True
+        cumulative_auxiliary_reward = 0
+        cumulative_env_reward = 0
         for episode in tqdm(range(n_episodes)):
             obs, info = env.reset()
             done = False
             # play one episode
             t = 0
-            episode_reward = 0
+            episode_auxiliary_reward = 0
+            episode_env_reward = 0
             episode_loss = 0
             
             while not done:
                 action = agent.get_action(obs, env)
-                next_obs, reward, terminated, truncated, info = env.step(action)
+                next_obs, env_reward, terminated, truncated, info = env.step(action)
 
                 # update if the environment is done and the current obs
                 done = terminated or truncated
-                reward+=intermediate_reward*np.min((args.w_position*(next_obs[0]-obs[0])/(0.5+1.2) + args.w_velocity*(np.abs(next_obs[1]))/0.7, 1))
+                aux_reward =intermediate_reward*np.min((args.w_position*(next_obs[0]-obs[0])/(0.5+1.2) + args.w_velocity*(np.abs(next_obs[1]))/0.7, 1))
                 if terminated:
                     next_obs = (None, None)
 
-                loss, target_count = agent.update(obs, action, reward, next_obs, batch_size=batch_size, target_count=target_count)
+                loss, target_count = agent.update(obs, action, env_reward+aux_reward, next_obs, batch_size=batch_size, target_count=target_count)
                     
                 if loss is not None:
-                    episode_reward += reward
+                    episode_auxiliary_reward += aux_reward
+                    episode_env_reward += env_reward
                     episode_loss+=loss
                 obs = next_obs
                 t+=1
 
             pbar.set_description(f"Episode {episode + 1}/{n_episodes}")
-            pbar.set_postfix(train_loss=episode_loss/t, epsilon=agent.epsilon, target_count=target_count, episode_steps=t, reward=episode_reward)
+            pbar.set_postfix(train_loss=episode_loss, epsilon=agent.epsilon, target_count=target_count, episode_steps=t, episode_auxiliary_reward=episode_auxiliary_reward, episode_env_reward=episode_env_reward)
             pbar.update(1)
             pbar.refresh() 
             if not empty:
-                finished.append(terminated)
-                episode_steps.append(t)
-                rewards.append(episode_reward)
-                losses.append(episode_loss)
+                finished += terminated
+                cumulative_auxiliary_reward += episode_auxiliary_reward
+                cumulative_env_reward += episode_env_reward
+
                 agent.decay_epsilon()
-                if episode % logging_interval == 0 :
-                    if args.wandb:
-                        wandb.log({"train_loss": np.mean(losses), "epsilon": agent.epsilon, "episode_steps": np.mean(episode_steps), "finished": np.sum(finished), "mean_reward": np.mean(rewards)})
-                    losses = []
-                    rewards = []
-                    finished = []
-                    episode_steps = []
+                if args.wandb:
+                    wandb.log({"train_loss": episode_loss, "epsilon": agent.epsilon, "episode_steps": t, "finished": finished, "episode_env_reward":episode_env_reward, "episode_aux_reward":episode_auxiliary_reward, "cumulative_env_reward":cumulative_env_reward, "cumulative_aux_reward":cumulative_auxiliary_reward})
+
                     
             if loss is not None:
                 empty = False
@@ -332,7 +329,6 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--discount_factor", type=float, default=0.95)
     parser.add_argument("--replay_size", type=int, default=10_000)
-    parser.add_argument("--logging_interval", type=int, default=10)
     parser.add_argument("--hidden_size", type=int, default=128)
     parser.add_argument("--dropout_rate", type=float, default=0.1)
     parser.add_argument("--weight_decay", type=float, default=0.01)
