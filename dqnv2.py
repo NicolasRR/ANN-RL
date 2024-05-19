@@ -82,8 +82,8 @@ class DQNAgentV2(DQNAgent):
             RND=0
         else:
             self.optimizer_intrinsic.zero_grad()
-            means = np.mean(self.replay_buffer.state_buffer[-self.running_window:], axis=0)
-            SD = np.std(self.replay_buffer.state_buffer[-self.running_window:], axis=0)
+            means = np.mean(self.replay_buffer.next_state_buffer[-self.running_window:], axis=0)
+            SD = np.std(self.replay_buffer.next_state_buffer[-self.running_window:], axis=0)
             normalized_obs = torch.tensor((next_obs-means)/SD, device=self.device).unsqueeze(0)
             predicted_intrinsic = self.predictor(normalized_obs)
             target_intrinsic = self.target_predictor(normalized_obs)
@@ -95,10 +95,7 @@ class DQNAgentV2(DQNAgent):
                 self.optimizer_intrinsic.step()
             reward+=RND
 
-        if terminal:
-            next_obs = (None, None)
-
-        self.replay_buffer.add(obs, action, reward, next_obs)
+        self.replay_buffer.add(obs, action, reward, next_obs,terminal=terminal)
         sample_replay = self.replay_buffer.sample(batch_size, self.alpha)
         if sample_replay is None:
             return None, target_count, RND, intrinsic_loss.item()
@@ -107,7 +104,7 @@ class DQNAgentV2(DQNAgent):
         actions = torch.tensor(sample_replay[1]).to(self.device)
         replay_obs = torch.tensor(sample_replay[0]).to(self.device)
         replay_next_obs = torch.tensor(sample_replay[3]).to(self.device)
-        non_terminal = ~torch.isnan(replay_next_obs)[:,0]
+        non_terminal = torch.tensor(~sample_replay[4]).to(self.device)
         
         self.qnetwork.train()
         q_values_obs = self.qnetwork(replay_obs)

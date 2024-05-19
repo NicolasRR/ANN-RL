@@ -43,19 +43,22 @@ class ReplayBuffer():
         self.reward_buffer = None
         self.next_state_buffer = None
         self.importance_buffer = None  
+        self.terminal_buffer = None  
         self.replay_size = replay_size
 
-    def add(self, state, action, reward, next_state):
+    def add(self, state, action, reward, next_state, terminal):
         if self.state_buffer is None:
             self.state_buffer = np.array(state)
             self.action_buffer = np.array([action])
             self.reward_buffer = np.array([reward])
             self.next_state_buffer = np.array(next_state)
+            self.terminal_buffer = np.array([terminal])
             self.importance_buffer = np.array([1], dtype=np.float32)
         else:
             self.state_buffer = np.vstack((self.state_buffer[-self.replay_size:], state)).astype(np.float32)
             self.action_buffer = np.hstack((self.action_buffer[-self.replay_size:], action))
             self.reward_buffer = np.hstack((self.reward_buffer[-self.replay_size:], reward))
+            self.terminal_buffer = np.hstack((self.terminal_buffer[-self.replay_size:], terminal))
             self.next_state_buffer = np.vstack((self.next_state_buffer[-self.replay_size:], next_state)).astype(np.float32)
             self.importance_buffer = np.hstack((self.importance_buffer[-self.replay_size:], np.max(self.importance_buffer)))
     
@@ -73,7 +76,7 @@ class ReplayBuffer():
             else:
                 idx = np.random.choice(len(self.state_buffer), batch_size, replace=False)
 
-            return [self.state_buffer[idx],self.action_buffer[idx],self.reward_buffer[idx],self.next_state_buffer[idx],idx]
+            return [self.state_buffer[idx],self.action_buffer[idx],self.reward_buffer[idx],self.next_state_buffer[idx],self.terminal_buffer[idx],idx]
 
 class DQNAgent:
     def __init__(
@@ -156,11 +159,12 @@ class DQNAgent:
         action: int,
         reward: float,
         next_obs: tuple[int, int, bool],
+        terminal: bool,
         target_count: int,
         batch_size: int = 32,
     ):
         
-        self.replay_buffer.add(obs, action, reward, next_obs)
+        self.replay_buffer.add(obs, action, reward, next_obs, terminal)
 
         sample_replay = self.replay_buffer.sample(batch_size, self.alpha)
         if sample_replay is None:
@@ -170,7 +174,7 @@ class DQNAgent:
         actions = torch.tensor(sample_replay[1]).to(self.device)
         replay_obs = torch.tensor(sample_replay[0]).to(self.device)
         replay_next_obs = torch.tensor(sample_replay[3]).to(self.device)
-        non_terminal = ~torch.isnan(replay_next_obs)[:,0]
+        non_terminal = torch.tensor(~sample_replay[4]).to(self.device)
         
         self.qnetwork.train()
         q_values_obs = self.qnetwork(replay_obs)
@@ -285,10 +289,8 @@ def run(args, env):
                 # update if the environment is done and the current obs
                 done = terminated or truncated
                 aux_reward =intermediate_reward*np.min((args.w_position*(next_obs[0]-obs[0])/(0.5+1.2) + args.w_velocity*(np.abs(next_obs[1]))/0.7, 1))
-                if terminated:
-                    next_obs = (None, None)
 
-                loss, target_count = agent.update(obs, action, env_reward+aux_reward, next_obs, batch_size=batch_size, target_count=target_count)
+                loss, target_count = agent.update(obs, action, env_reward+aux_reward, next_obs, batch_size=batch_size, target_count=target_count, terminal=terminated)
                     
                 if loss is not None:
                     episode_auxiliary_reward += aux_reward
