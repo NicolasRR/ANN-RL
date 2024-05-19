@@ -345,5 +345,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     env = gym.make('MountainCar-v0')
-
+    env.action_space.seed(args.seed)
+    observation, info = env.reset(seed=args.seed)
     run(args, env)

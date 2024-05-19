@@ -79,7 +79,7 @@ class DQNAgentV2(DQNAgent):
                 self.mse_buffer = np.array([intrinsic_loss.item()])
             else:
                 self.mse_buffer = np.hstack((self.mse_buffer,intrinsic_loss.item()))
-
+            RND=0
         else:
             self.optimizer_intrinsic.zero_grad()
             means = np.mean(self.replay_buffer.state_buffer[-self.running_window:], axis=0)
@@ -101,7 +101,7 @@ class DQNAgentV2(DQNAgent):
         self.replay_buffer.add(obs, action, reward, next_obs)
         sample_replay = self.replay_buffer.sample(batch_size, self.alpha)
         if sample_replay is None:
-            return None, target_count, None, None
+            return None, target_count, RND, intrinsic_loss.item()
         idx = sample_replay[-1]
         replay_reward = torch.tensor(sample_replay[2]).to(self.device)
         actions = torch.tensor(sample_replay[1]).to(self.device)
@@ -294,5 +294,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     env = gym.make('MountainCar-v0')
+    env.action_space.seed(args.seed)
+
+    observation, info = env.reset(seed=args.seed)
 
     run(args, env)
