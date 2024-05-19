@@ -208,7 +208,7 @@ def run(args, env):
         predictor_weight_decay=predictor_weight_decay
     )
     if args.wandb:
-        wandb.init(project='ANN', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update, "reward_factor":reward_factor, "reward_hidden_size":reward_hidden_size, "amsgrad":amsgrad}, name='DQNv2')
+        wandb.init(project='ANN-1', config={"learning_rate": learning_rate, "n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": epsilon_decay, "batch_size": batch_size, "discount_factor": discount_factor, "replay_size": replay_size, "hidden_size": hidden_size, "dropout_rate": dropout_rate, "weight_decay":weight_decay, "target_network":target_network, "alpha":alpha,"target_network_update":target_network_update, "reward_factor":reward_factor, "reward_hidden_size":reward_hidden_size, "amsgrad":amsgrad}, name='DQNv2')
 
 
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=n_episodes)
@@ -233,7 +233,7 @@ def run(args, env):
 
                 # update if the environment is done and the current obs
                 done = terminated or truncated
-
+                env_reward*=args.env_reward
                 loss, target_count, RND,intrinsic_loss = agent.update(obs, action, env_reward, next_obs, batch_size=batch_size, target_count=target_count, terminal=terminated)
                     
                 if loss is not None:
@@ -288,6 +288,7 @@ if __name__ == "__main__":
     parser.add_argument("--predictor_weight_decay", type=float, default=1e-4)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--amsgrad", action="store_true")
+    parser.add_argument("--env_reward", action="store_true")
     parser.add_argument("--target_network", action="store_true")
     parser.add_argument("--gpu", action="store_true")
 
