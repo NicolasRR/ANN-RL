@@ -5,9 +5,11 @@ import matplotlib.pyplot as plt
 from collections import deque
 import argparse
 from scipy.special import softmax
+from tqdm import tqdm
+import wandb
 
 class DynaAgent:
-    def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, epsilon=0.9, min_epsilon=0.05, k=5, replay_size=10_000, alpha=0,env=gym.make('MountainCar-v0')):
+    def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, start_epsilon=0.9, min_epsilon=0.05, k=5, replay_size=10_000, alpha=0,env=gym.make('MountainCar-v0')):
     
         self.born_inf=env.observation_space.low
         self.born_sup=env.observation_space.high
@@ -16,7 +18,7 @@ class DynaAgent:
         self.n_actions=env.action_space.n
         self.gamma = gamma
         self.decay=decay
-        self.epsilon = epsilon
+        self.epsilon = start_epsilon
         self.min_epsilon = min_epsilon
         self.k = k
         self.replay_size = replay_size
@@ -57,8 +59,6 @@ class DynaAgent:
             velocity = discr_state[1]
   
         if len(discr_state.shape)>1:
-
-            # Compute the second term of the Q-value update equation
             discounted_rewards = self.gamma * np.sum(self.P_hat[position, velocity, action, :,:] / np.sum(self.P_hat[position, velocity, action, :,:],axis=(-1,-2)).reshape(-1,1,1)*max_next_q_values, axis=(-1,-2))
         else:
             discounted_rewards = self.gamma * np.sum(self.P_hat[position, velocity, action, :,:] / np.sum(self.P_hat[position, velocity, action, :,:],axis=(-1,-2))*max_next_q_values, axis=(-1,-2))
@@ -76,13 +76,15 @@ class DynaAgent:
         # FIXME: do we have to reset the count matrix after updating the Q-value?
         if self.alpha>1e-5 and idx is not None:
             self.importance_buffer[idx] = np.abs(delta)
+
+        return delta
         
     def update(self, state, action, reward, next_state):
         discr_state = self.discretize_state(state)
         discr_next_state = self.discretize_state(next_state)
         # FIXME: add none when too small replay buffer
         self.update_model(discr_state, action, reward, discr_next_state)
-        self.update_q_value(discr_state, action)
+        _ = self.update_q_value(discr_state, action)
         
         # Store experience in replay buffer
         if self.replay_buffer is None:
@@ -101,12 +103,13 @@ class DynaAgent:
                 rand_idx = np.random.choice(len(self.replay_buffer), self.k, replace=False)
 
             rand_experience = self.replay_buffer[rand_idx]
-            self.update_q_value(rand_experience[:,0:2], rand_experience[:,-1], idx=rand_idx)
-
+            return np.mean(self.update_q_value(rand_experience[:,0:2], rand_experience[:,-1], idx=rand_idx))
+        return None
         
-    def select_action(self, state):
-        if np.random.rand() < self.epsilon:
-            return np.random.randint(self.n_actions)
+    def select_action(self, state, env):
+        if np.random.random() < self.epsilon:
+            action = env.action_space.sample() 
+            return action
         else:
             discr_state = self.discretize_state(state)
             return np.argmax(self.Q[discr_state[0], discr_state[1], :])
@@ -115,112 +118,127 @@ class DynaAgent:
         if len(self.replay_buffer) >= self.replay_size:
             self.epsilon = max(self.min_epsilon, self.epsilon * self.decay)
 
-def plot_max_Q(dyna):
-    max_Q_values = np.zeros((dyna.n_states[0], dyna.n_states[1]))
+def plot_max_Q(Q_values, t):
 
-    for i in range(dyna.n_states[0]):
-        for j in range(dyna.n_states[1]):
-            max_Q_values[i][j] = np.max(dyna.Q[i,j,:])
+    data = np.max(Q_values, axis=-1).T
+    plt.figure()
 
-    plt.imshow(max_Q_values.T, origin='lower', extent=[dyna.born_inf[0], dyna.born_sup[0], dyna.born_inf[1], dyna.born_sup[1]])
-    plt.colorbar(label='Max Q-value')
+    plt.imshow(data, cmap='hot', interpolation='nearest')
     plt.xlabel('Position')
     plt.ylabel('Velocity')
-    plt.title('Max Q-values after learning')
-    plt.show()
+    plt.title(f'Max Q-value at episode {t}')
+    plt.colorbar()
+    return plt
     
-def plot_delta_Q(dyna):
-    plt.plot(dyna.delta_Q)
-    plt.title('Q_value update step')
-    plt.show()
     
 def run(args):
-    
+    # Parameters
+    seed = args.seed
+    discr_step = [args.discr_pos, args.discr_vel]
+    k = args.k
+    alpha = args.alpha
+    decay = args.decay
+    discount = args.discount_factor
+    replay_size = args.replay_size
+    start_epsilon=  args.start_epsilon
+    n_episodes = args.n_episodes
+    final_epsilon= args.final_epsilon
+    snapshot_interval = args.snapshot_interval
     # Create the environment
     env = gym.make('MountainCar-v0')
+    env.action_space.seed(seed)
+
+    observation, info = env.reset(seed=seed)
     # Create the DynaAgent
-    dyna_agent = DynaAgent(decay=0.9, discr_step=[0.25, 0.05], env=env)
+    agent = DynaAgent(decay=decay, start_epsilon=start_epsilon, gamma=discount, discr_step=discr_step, k=k,alpha=alpha, replay_size=replay_size,env=env, min_epsilon=final_epsilon)
+    if args.wandb:
+        wandb.init(project='ANN-1', config={"seed":seed,"n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": decay, "batch_size": k, "discount_factor": discount, "replay_size": replay_size,"alpha":alpha, "discr_pos":args.discr_pos, "discr_vel":args.discr_vel}, name='dyna')
 
     # Train the agent
-    n_episodes = 10001
-    episode_rewards=[]
-    episode_durations = []
+    env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=n_episodes)
+    with tqdm(total=n_episodes, desc=f"Episode 0/{n_episodes}") as pbar:
+        finished = 0
+        empty = True
+        cumulative_env_reward = 0
+        fig,ax=plt.subplots(1,2,figsize=(11,5))
 
-    fig,ax=plt.subplots(1,2,figsize=(11,5))
+        for episode in tqdm(range(n_episodes)):
+            state, info = env.reset()
+            done = False
+            # play one episode
+            t = 0
+            episode_env_reward = 0
+            episode_loss = 0
+            x=[state[0]]
+            v=[state[1]]
+            while not done:
+                action = agent.select_action(state, env)
+                next_state, reward, terminated, truncated, _ = env.step(action)
 
-    for episode in range(n_episodes):
-        state,_ = env.reset()
-        total_reward = 0
-        solved=False
-        done = False
-        x=[state[0]]
-        v=[state[1]]
-        n_itr=0
-        while not done:
-            action = dyna_agent.select_action(state)
-            next_state, reward, terminated, truncated, _ = env.step(action)
-            dyna_agent.update(state, action, reward, next_state)
-            solved=terminated
-            done= terminated or truncated
-            state = next_state
-            total_reward += reward
-            n_itr+=1
-            x.append(state[0])  
-            v.append(state[1])
+                loss = agent.update(state, action, reward, next_state)
+                done = terminated or truncated
+                state = next_state
+                if loss is not None:
+                    episode_env_reward += reward
+                    episode_loss+=loss           
+                t+=1
+                if episode % snapshot_interval == 0:
+                    x.append(state[0])  
+                    v.append(state[1])
+            
+            agent.decay_epsilon()
 
-        dyna_agent.decay_epsilon()
-        
-        episode_rewards.append(total_reward) 
-        episode_durations.append(n_itr)
-        
-        if (episode%2000==0):
-            ax[0].plot(list(range(n_itr+1)),x, label=f'episode {episode}')
-            ax[1].plot(x,v, label=f'episode {episode}')
-            print(f'episode {episode} : solved? : {solved}')
+            pbar.set_description(f"Episode {episode + 1}/{n_episodes}")
+            pbar.set_postfix(train_loss=episode_loss, epsilon=agent.epsilon, episode_steps=t, episode_env_reward=episode_env_reward, finished=finished, cumulative_env_reward=cumulative_env_reward)
+            pbar.update(1)
+            pbar.refresh() 
+            if not empty:
+                finished += terminated
+                cumulative_env_reward += episode_env_reward
 
-    env.close()
-    ax[0].set_xlabel('Episodes')
-    ax[0].set_ylabel('Position')
-    ax[1].set_xlabel('Position')
-    ax[1].set_ylabel('Velocity')
-    plt.legend()
-    plt.show()
+                agent.decay_epsilon()
+                if args.wandb:
+                    wandb.log({"train_loss": episode_loss, "epsilon": agent.epsilon, "episode_steps": t, "finished": finished, "episode_env_reward":episode_env_reward, "cumulative_env_reward":cumulative_env_reward})
 
-    dyna_agent.plot_delta_Q()
-    dyna_agent.plot_max_Q()
+            if (episode // snapshot_interval >=1 and episode % snapshot_interval == 0)  or episode == n_episodes - 1:
+                max_q = plot_max_Q(agent.Q, episode)
+                color = f"{0.9*(1-(episode+1)/n_episodes)}"
+                ax[0].plot(list(range(t+1)),x, c=color, zorder = 1)
+                ax[1].plot(list(range(t+1)),v, c=color, zorder = 1)                
+                if args.wandb:
+                    wandb.log({"max_Q": wandb.Image(max_q,caption=f'Max Q-value at episode {episode}')})
 
-    plt.plot(episode_durations, label='episode durations')
-    plt.plot(episode_rewards,label='episode rewards')
-    plt.title('Duration and total reward for each episode' )
-    plt.xlabel('Episodes')
-    plt.legend()
-    plt.savefig('dyna.png')
+            if loss is not None:
+                empty = False
+
+
+        env.close()
+        ax[0].set_xlabel('Episodes')
+        ax[0].set_ylabel('Position')
+        ax[1].set_xlabel('Position')
+        ax[1].set_ylabel('Velocity')
+        plt.legend()
+        if args.wandb:
+            wandb.log({"max_Q": wandb.Image(fig,caption=f'Trajectories')})
+
 
 if __name__ == "__main__":
 
 
     parser = argparse.ArgumentParser(description="Script for pretraining a language model")
-    parser.add_argument("--learning_rate", type=float, default=1e-3)
-    parser.add_argument("--n_episodes", type=int, default=5_000)
+    parser.add_argument("--n_episodes", type=int, default=10_000)
+    parser.add_argument("--snapshot_interval", type=int, default=500)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--discr_pos", type=float, default=0.05)
+    parser.add_argument("--discr_vel", type=float, default=0.005)
+    parser.add_argument("--k", type=int, default=128)
+    parser.add_argument("--alpha", type=float, default=0)
+    parser.add_argument("--decay", type=float, default=0.99)
+    parser.add_argument("--discount_factor", type=float, default=0.99)
+    parser.add_argument("--replay_size", type=int, default=10_000)
     parser.add_argument("--start_epsilon", type=float, default=0.9)
     parser.add_argument("--final_epsilon", type=float, default=0.05)
-    parser.add_argument("--epsilon_decay", type=float, default=0.995)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--discount_factor", type=float, default=0.95)
-    parser.add_argument("--replay_size", type=int, default=10_000)
-    parser.add_argument("--logging_interval", type=int, default=10)
-    parser.add_argument("--hidden_size", type=int, default=128)
-    parser.add_argument("--dropout_rate", type=float, default=0.1)
-    parser.add_argument("--weight_decay", type=float, default=0.01)
-    parser.add_argument("--target_network_update", type=int, default=10_000)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--alpha", type=float, default=1)
-    parser.add_argument("--intermediate_reward", type=float, default=0)
-    parser.add_argument("--final_reward", type=float, default=0)
-    parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--amsgrad", action="store_true")
-    parser.add_argument("--auxiliary", action="store_true")
-    parser.add_argument("--target_network", action="store_true")
+    parser.add_argument("--wandb", action='store_true')
 
     args = parser.parse_args()
 
