@@ -9,7 +9,7 @@ from tqdm import tqdm
 import wandb
 
 class DynaAgent:
-    def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, start_epsilon=0.9, min_epsilon=0.05, k=5, replay_size=10_000, alpha=0,env=gym.make('MountainCar-v0')):
+    def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, start_epsilon=0.9, min_epsilon=0.05, k=5, replay_size=10_000, alpha=0,env=gym.make('MountainCar-v0'), init_val=0.1):
     
         self.born_inf=env.observation_space.low
         self.born_sup=env.observation_space.high
@@ -24,7 +24,7 @@ class DynaAgent:
         self.replay_size = replay_size
         
         # Initialize model components
-        self.P_hat = np.full((self.n_states[0], self.n_states[1], self.n_actions, self.n_states[0], self.n_states[1]),0.1)
+        self.P_hat = np.full((self.n_states[0], self.n_states[1], self.n_actions, self.n_states[0], self.n_states[1]),init_val)
         self.R_hat = np.zeros((self.n_states[0], self.n_states[1], self.n_actions))
         self.count_matrix=np.zeros_like(self.R_hat)
         self.Q = np.zeros((self.n_states[0], self.n_states[1], self.n_actions))
@@ -152,9 +152,9 @@ def run(args):
 
     observation, info = env.reset(seed=seed)
     # Create the DynaAgent
-    agent = DynaAgent(decay=decay, start_epsilon=start_epsilon, gamma=discount, discr_step=discr_step, k=k,alpha=alpha, replay_size=replay_size,env=env, min_epsilon=final_epsilon)
+    agent = DynaAgent(decay=decay, start_epsilon=start_epsilon, gamma=discount, discr_step=discr_step, k=k,alpha=alpha, replay_size=replay_size,env=env, min_epsilon=final_epsilon, init_val=args.init_val)
     if args.wandb:
-        wandb.init(project='ANN-1', config={"seed":seed,"n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": decay, "batch_size": k, "discount_factor": discount, "replay_size": replay_size,"alpha":alpha, "discr_pos":args.discr_pos, "discr_vel":args.discr_vel}, name='dyna')
+        wandb.init(project='ANN-1', config={"seed":seed,"n_episodes": n_episodes, "start_epsilon": start_epsilon, "final_epsilon": final_epsilon, "epsilon_decay": decay, "batch_size": k, "discount_factor": discount, "replay_size": replay_size,"alpha":alpha, "discr_pos":args.discr_pos, "discr_vel":args.discr_vel, "init_val":args.init_val}, name='dyna')
 
     # Train the agent
     env = gym.wrappers.RecordEpisodeStatistics(env, deque_size=n_episodes)
@@ -236,6 +236,7 @@ if __name__ == "__main__":
     parser.add_argument("--k", type=int, default=128)
     parser.add_argument("--alpha", type=float, default=0)
     parser.add_argument("--decay", type=float, default=0.99)
+    parser.add_argument("--init_val", type=float, default=0.1)    
     parser.add_argument("--discount_factor", type=float, default=0.99)
     parser.add_argument("--replay_size", type=int, default=10_000)
     parser.add_argument("--start_epsilon", type=float, default=0.9)
