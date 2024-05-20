@@ -134,6 +134,8 @@ def plot_max_Q(Q_values, t):
 def run(args):
     # Parameters
     seed = args.seed
+    np.random.seed(args.seed)
+    random.seed(args.seed)
     discr_step = [args.discr_pos, args.discr_vel]
     k = args.k
     alpha = args.alpha
@@ -219,7 +221,7 @@ def run(args):
         ax[1].set_ylabel('Velocity')
         plt.legend()
         if args.wandb:
-            wandb.log({"max_Q": wandb.Image(fig,caption=f'Trajectories')})
+            wandb.log({"trajectories": wandb.Image(fig,caption=f'Trajectories')})
 
 
 if __name__ == "__main__":
