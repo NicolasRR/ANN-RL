@@ -118,7 +118,7 @@ class DynaAgent:
         if len(self.replay_buffer) >= self.replay_size:
             self.epsilon = max(self.min_epsilon, self.epsilon * self.decay)
 
-def plot_max_Q(Q_values, t):
+def plot_max_Q(Q_values, t, discr_step,born_inf):
 
     data = np.max(Q_values, axis=-1).T
     plt.figure()
@@ -126,6 +126,13 @@ def plot_max_Q(Q_values, t):
     plt.imshow(data, cmap='hot', interpolation='nearest')
     plt.xlabel('Position')
     plt.ylabel('Velocity')
+    xlocs, xlabels = plt.xticks()
+    ylocs, ylabels = plt.yticks()
+    # Multiply them by 0.025 and set them back
+    plt.xticks(xlocs, ["{:.2f}".format(loc * discr_step[0] + born_inf[0]) for loc in xlocs])
+    plt.yticks(ylocs, ["{:.2f}".format(loc * discr_step[1] + born_inf[1]) for loc in ylocs])
+
+
     plt.title(f'Max Q-value at episode {t}')
     plt.colorbar()
     return plt
@@ -203,7 +210,7 @@ def run(args):
                     wandb.log({"train_loss": episode_loss, "epsilon": agent.epsilon, "episode_steps": t, "finished": finished, "episode_env_reward":episode_env_reward, "cumulative_env_reward":cumulative_env_reward})
 
             if (episode // snapshot_interval >=1 and episode % snapshot_interval == 0)  or episode == (n_episodes - 1):
-                max_q = plot_max_Q(agent.Q, episode)
+                max_q = plot_max_Q(agent.Q, episode, discr_step, agent.born_inf)
                 color = f"{0.9*(1-(episode+1)/n_episodes)}"
                 ax[0].plot(range(t+1),x, c=color, zorder = 1)
                 ax[1].plot(range(t+1),v, c=color, zorder = 1)                
