@@ -24,7 +24,7 @@ class DynaAgent:
         self.replay_size = replay_size
         
         # Initialize model components
-        self.P_hat = np.ones((self.n_states[0], self.n_states[1], self.n_actions, self.n_states[0], self.n_states[1]))
+        self.P_hat = np.full((self.n_states[0], self.n_states[1], self.n_actions, self.n_states[0], self.n_states[1]),0.1)
         self.R_hat = np.zeros((self.n_states[0], self.n_states[1], self.n_actions))
         self.count_matrix=np.zeros_like(self.R_hat)
         self.Q = np.zeros((self.n_states[0], self.n_states[1], self.n_actions))
@@ -184,7 +184,7 @@ def run(args):
                     episode_env_reward += reward
                     episode_loss+=loss           
                 t+=1
-                if episode % snapshot_interval == 0:
+                if episode % snapshot_interval == 0 or episode == (n_episodes - 1):
                     x.append(state[0])  
                     v.append(state[1])
             
@@ -202,7 +202,7 @@ def run(args):
                 if args.wandb:
                     wandb.log({"train_loss": episode_loss, "epsilon": agent.epsilon, "episode_steps": t, "finished": finished, "episode_env_reward":episode_env_reward, "cumulative_env_reward":cumulative_env_reward})
 
-            if (episode // snapshot_interval >=1 and episode % snapshot_interval == 0)  or episode == n_episodes - 1:
+            if (episode // snapshot_interval >=1 and episode % snapshot_interval == 0)  or episode == (n_episodes - 1):
                 max_q = plot_max_Q(agent.Q, episode)
                 color = f"{0.9*(1-(episode+1)/n_episodes)}"
                 ax[0].plot(range(t+1),x, c=color, zorder = 1)
