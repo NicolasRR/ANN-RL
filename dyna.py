@@ -203,8 +203,8 @@ def run(args):
             if (episode // snapshot_interval >=1 and episode % snapshot_interval == 0)  or episode == n_episodes - 1:
                 max_q = plot_max_Q(agent.Q, episode)
                 color = f"{0.9*(1-(episode+1)/n_episodes)}"
-                ax[0].plot(list(range(t+1)),x, c=color, zorder = 1)
-                ax[1].plot(list(range(t+1)),v, c=color, zorder = 1)                
+                ax[0].plot(range(t+1),x, c=color, zorder = 1)
+                ax[1].plot(range(t+1),v, c=color, zorder = 1)                
                 if args.wandb:
                     wandb.log({"max_Q": wandb.Image(max_q,caption=f'Max Q-value at episode {episode}')})
 
