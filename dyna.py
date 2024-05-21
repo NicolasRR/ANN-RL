@@ -7,6 +7,7 @@ import argparse
 from scipy.special import softmax
 from tqdm import tqdm
 import wandb
+from scipy.special import softmax
 
 class DynaAgent:
     def __init__(self, discr_step=np.array([0.025, 0.005]), gamma=0.99, decay= 0.99, start_epsilon=0.9, min_epsilon=0.05, k=5, replay_size=10_000, alpha=0,env=gym.make('MountainCar-v0'), init_val=0.1):
@@ -222,9 +223,9 @@ def run(args):
 
 
         env.close()
-        ax[0].set_xlabel('Episodes')
+        ax[0].set_xlabel('Steps')
         ax[0].set_ylabel('Position')
-        ax[1].set_xlabel('Position')
+        ax[1].set_xlabel('Steps')
         ax[1].set_ylabel('Velocity')
         plt.legend()
         if args.wandb:
@@ -243,7 +244,7 @@ if __name__ == "__main__":
     parser.add_argument("--k", type=int, default=128)
     parser.add_argument("--alpha", type=float, default=0)
     parser.add_argument("--decay", type=float, default=0.99)
-    parser.add_argument("--init_val", type=float, default=0.1)    
+    parser.add_argument("--init_val", type=float, default=0.01)    
     parser.add_argument("--discount_factor", type=float, default=0.99)
     parser.add_argument("--replay_size", type=int, default=10_000)
     parser.add_argument("--start_epsilon", type=float, default=0.9)
