@@ -1,7 +1,8 @@
 # ANN-RL
 Reinforcement learning project exploring sparse rewards
 
-TODO: run with 0.0 for init_val
-Correct the plots
-Change from linearplot to scatter pour les episode steps
-Run new episode for dyna with modified Qplot with trajectories on top
+## Setup 
+Please install the necessary packages using `pip install -r requirements`
+
+## How to run the code ?
+Execute the the bash scripts to launch the automated pipeline or run the python scripts with the required arguments
