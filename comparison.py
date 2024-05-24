@@ -59,6 +59,7 @@ def run_dqn(agent, n_episodes,args, training, env, rnd, color_type, ax):
                         loss, target_count = agent.update(obs, action, env_reward+aux_reward, next_obs, batch_size=args.batch_size, target_count=target_count, terminal=terminated)
                 else: 
                     loss = None
+                    episode_env_reward += env_reward
                 
                 if episode % args.snapshot_interval == 0 or episode == (n_episodes - 1):
                     x.append(obs[0])  
@@ -88,11 +89,14 @@ def run_dqn(agent, n_episodes,args, training, env, rnd, color_type, ax):
                 max_q = plot_max_Q(q_values, episode, (args.discr_pos, args.discr_vel), env.observation_space.low, maximum=True)        
                 wandb.log({"max_Q": wandb.Image(max_q,caption=f'Max Q-value at episode {episode}')})
                     
+            if not training:
+                finished += terminated
+                cumulative_env_reward += episode_env_reward    
+                wandb.log({"episode_steps": t, "finished": finished, "episode_env_reward":episode_env_reward, "cumulative_env_reward":cumulative_env_reward}) 
             if not training and ((episode // args.snapshot_interval >=1 and episode % args.snapshot_interval == 0)  or episode == (n_episodes - 1)):
-                wandb.log({"episode_steps": t, "finished": finished, "episode_env_reward":episode_env_reward, "episode_aux_reward":episode_auxiliary_reward, "cumulative_env_reward":cumulative_env_reward, "cumulative_aux_reward":cumulative_auxiliary_reward})
                 color_intensity = 0.9*(1-(episode+1)/n_episodes)
                 cmap = plt.cm.get_cmap(color_type)
-                color = cmap(color_intensity)
+                color = cmap(color_intensity)                
                 ax[0].plot(range(t+1),x, c=color, zorder = 1)
                 ax[1].plot(range(t+1),v, c=color, zorder = 1)        
                 
@@ -121,6 +125,8 @@ def run_dyna(agent, n_episodes, snapshot_interval,discr_step, training, ax, env,
                     loss = agent.update(state, action, reward, next_state)
                 else:
                     loss = None
+                    episode_env_reward += reward
+
                 done = terminated or truncated
                 state = next_state
                 if loss is not None:
@@ -147,14 +153,17 @@ def run_dyna(agent, n_episodes, snapshot_interval,discr_step, training, ax, env,
             if training and (episode // snapshot_interval >=1 and episode % snapshot_interval == 0)  or episode == (n_episodes - 1):
                 max_q = plot_max_Q(agent.Q, episode, discr_step, agent.born_inf)             
                 wandb.log({"max_Q": wandb.Image(max_q,caption=f'Max Q-value at episode {episode}')})
-
+            if not training:
+                finished += terminated
+                cumulative_env_reward += episode_env_reward
+                wandb.log({"episode_steps": t, "finished": finished, "episode_env_reward":episode_env_reward, "cumulative_env_reward":cumulative_env_reward})
             if not training and ((episode // args.snapshot_interval >=1 and episode % args.snapshot_interval == 0)  or episode == (n_episodes - 1)):
                 color_intensity = 0.9*(1-(episode+1)/n_episodes)
                 cmap = plt.cm.get_cmap(color_type)
                 color = cmap(color_intensity)
                 ax[0].plot(range(t+1),x, c=color, zorder = 1)
                 ax[1].plot(range(t+1),v, c=color, zorder = 1)    
-                wandb.log({"episode_steps": t, "finished": finished, "episode_env_reward":episode_env_reward, "cumulative_env_reward":cumulative_env_reward})
+
             if loss is not None:
                 empty = False
 
@@ -193,13 +202,12 @@ def experiment(args, env):
 
 
     wandb.init(project='ANN-1', config=vars(args), name=f'DQN_training')
-
-
     run_dqn(agent, n_episodes, args, training=True, env=env, rnd=False, ax=ax, color_type='Reds')
     wandb.finish()
 
-    wandb.init(project='ANN-1', config=vars(args), name=f'DQN_testing_v2')
+    wandb.init(project='ANN-1', config=vars(args), name=f'DQN_testing')
     agent.epsilon = 0
+    # agent.qnetwork.eval()
     run_dqn(agent, 1_000, args, training=False, env=env, rnd=False, ax=ax, color_type='Reds')
 
     wandb.finish()
@@ -215,7 +223,7 @@ def experiment(args, env):
         initial_epsilon=args.start_epsilon,
         replay_size=args.replay_size,
         dropout_rate=args.dropout_rate,
-        target_network=args.target_network,
+        target_network=False,
         weight_decay=args.weight_decay,
         target_network_update=args.target_network_update,
         alpha=args.alpha,
@@ -234,6 +242,7 @@ def experiment(args, env):
 
     wandb.init(project='ANN-1', config=vars(args), name=f'DQN_testing_v2')
     agent.epsilon = 0
+    # agent.qnetwork.eval()
     run_dqn(agent, 1_000, args, training=False, env=env, rnd=True,ax=ax, color_type='Greens')
 
     wandb.finish()
@@ -283,7 +292,7 @@ if __name__ == "__main__":
     parser.add_argument("--snapshot_interval", type=int, default=500)
     parser.add_argument("--reward_hidden_size", type=int, default=128)
     parser.add_argument("--predictor_learning_rate", type=float, default=1e-3)
-    parser.add_argument("--reward_factor", type=float, default=1)
+    parser.add_argument("--reward_factor", type=float, default=5)
     parser.add_argument("--running_window", type=int, default=1000)
     parser.add_argument("--predictor_weight_decay", type=float, default=1e-4)
     parser.add_argument("--env_reward", action="store_false")
