@@ -119,9 +119,12 @@ class DynaAgent:
         if len(self.replay_buffer) >= self.replay_size:
             self.epsilon = max(self.min_epsilon, self.epsilon * self.decay)
 
-def plot_max_Q(Q_values, t, discr_step,born_inf):
+def plot_max_Q(Q_values, t, discr_step,born_inf, maximum=False):
 
-    data = np.max(Q_values, axis=-1).T
+    if not maximum:
+        data = np.max(Q_values, axis=-1).T
+    else:
+        data = Q_values.T
     plt.figure()
 
     plt.imshow(data, cmap='hot', interpolation='nearest')
